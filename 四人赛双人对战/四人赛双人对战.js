@@ -7,6 +7,8 @@ var { baidu_or_huawei } = hamibot.env;
 var delay_time = 1000;
 count = Number(count);
 
+// 将设备保持常亮
+device.keepScreenDim();
 // 调用华为api所需参数
 var { username } = hamibot.env;
 var { password } = hamibot.env;
@@ -14,7 +16,7 @@ var { domainname } = hamibot.env;
 var { projectname } = hamibot.env;
 var { endpoint } = hamibot.env;
 var { projectId } = hamibot.env;
-
+var { pushplus_token } = hamibot.env;
 // 调用百度api所需参数
 var { AK } = hamibot.env;
 var { SK } = hamibot.env;
@@ -25,27 +27,43 @@ if (whether_improve_accuracy == 'yes' && !password && !AK) {
 }
 
 // 检查Hamibot版本是否支持ocr
-if (app.versionName < "1.3.1") {
-  toast("请到官网将Hamibot更新至v1.3.1版本或更高版本");
+if (app.versionName < "1.3.0") {
+  toast("请将Hamibot更新至最新版v1.3.0");
   exit();
 }
 
 //请求横屏截图权限
 threads.start(function () {
-  var beginBtn;
-  if (beginBtn = classNameContains("Button").textContains("开始").findOne(delay_time));
-  else (beginBtn = classNameContains("Button").textContains("允许").findOne(delay_time));
-  beginBtn.click();
+  try {
+    var beginBtn;
+    if (beginBtn = classNameContains("Button").textContains("开始").findOne(delay_time));
+    else (beginBtn = classNameContains("Button").textContains("允许").findOne(delay_time));
+    beginBtn.click();
+  } catch (error) {
+  }
 });
 requestScreenCapture(false);
-
 sleep(delay_time);
 
 // 模拟随机时间
 function random_time(time) {
   return time + random(100, 1000);
 }
-
+/**
+  * 推送通知到微信
+  * @param {string} account 账号
+  * @param {string} score 分数
+  */
+function push_weixin_message(account, score) {
+  http.postJson(
+    'http://www.pushplus.plus/send',
+    {
+      token: pushplus_token,
+      title: '强国学习通知',
+      content: '账号名' + account + '今日已经获得' + score + '分'
+    }
+  );
+}
 function entry_model(number) {
   sleep(random_time(delay_time * 2));
   var model = className('android.view.View').depth(22).findOnce(number);
@@ -62,7 +80,6 @@ function my_click_clickable(target) {
     click(target);
   }
 }
-
 /**
  * 模拟点击不可以点击元素
  * @param {UiObject} target 控件或者是控件文本
@@ -78,96 +95,113 @@ function my_click_non_clickable(target) {
   var randomY = random(tmp.top, tmp.bottom);
   click(randomX, randomY);
 }
-
 /**
  * 答题
  * @param {int} depth_option 选项控件的深度
  * @param {string} question 问题
  */
 function do_contest_answer(depth_option, question) {
-  // 等待选项加载
-  className('android.widget.RadioButton').depth(32).clickable(true).waitFor();
-  // 选项文字列表
-  var options_text = []
-  // 获取所有选项控件
-  var options = className('android.view.View').depth(depth_option).text('').find();
-  if (!options.empty()) {
-    for (var i = 0; i < options.length; ++i) {
-      var pos = options[i].bounds();
-      var img = images.clip(captureScreen(), pos.left, pos.top, pos.width(), pos.height());
-      var option_text = ocr.recognizeText(img);
-      // 如果是四人赛双人对战还会带有A.需要处理
-      if (option_text[1] == '.') {
-        option_text = option_text.slice(2);
-      }
-      options_text.push(option_text);
-    }
-  }
-
-  // 如果question如下，则不能通过题目搜索，应该通过选项搜索
-  if (question == "选择正确的读音" || question == "选择词语的正确词形" || question == "下列词形正确的是") {
-    question = options_text[0];
-  }
-
-  var result;
-
-  // 发送http请求获取答案 网站搜题速度 r1 > r2
-  try {
-    // 此网站只支持十个字符的搜索
-    var r1 = http.get('http://www.syiban.com/search/index/init.html?modelid=1&q=' + encodeURI(question.slice(0, 10)));
-    result = r1.body.string().match(/答案：.*</);
-  } catch (error) {
-  }
-  // 如果第一个网站没获取到正确答案，则利用第二个网站
-  if (!(result && result[0].charCodeAt(3) > 64 && result[0].charCodeAt(3) < 69)) {
-    try {
-      // 此网站只支持六个字符的搜索
-      var r2 = http.get('https://www.souwen123.com/search/select.php?age=' + encodeURI(question.slice(0, 6)));
-      result = r2.body.string().match(/答案：.*</);
-    } catch (error) {
-    }
-  }
-
-  if (result && options_text) {
-    // 答案文本
-    var result = result[0].slice(5, result[0].indexOf('<'));
-    var option_i = options_text.indexOf(result);
-    if (option_i != -1) {
-      try {
-        my_click_non_clickable(options[option_i]);
-      } catch (error) {
-        // 如果选项不存在，则点击第一个
-        my_click_non_clickable(options[0]);
-      }
+    if (question == "选择正确的读音" || question == "选择词语的正确词形" || question == "下列词形正确的是") {
+        // 选择第一个
+        className('android.widget.RadioButton').depth(depth_option).waitFor();
+        className('android.widget.RadioButton').depth(depth_option).findOne().click();
     } else {
-      // 如果没找到结果则根据相似度选择最相似的那个
-      var max_similarity = 0;
-      var max_similarity_index = 1;
-      for (var i = 0; i < options_text.length; ++i) {
-        var similarity = getSimilarity(options_text[i], result);
-        if (similarity > max_similarity) {
-          max_similarity = similarity;
-          max_similarity_index = i;
+        var result;
+        // 发送http请求获取答案 网站搜题速度 r1 > r2
+        try {
+            var r1 = http.get('http://www.syiban.com/search/index/init.html?modelid=1&q=' + encodeURI(question.slice(0, 10)));
+            result = r1.body.string().match(/(答案：[A-Z]、)([^<]*?)(<)/);  // 匹配答案完整内容，去除选项编号的纯答案放在result[2]中
+        } catch (error) {
         }
-      }
-      my_click_non_clickable(options[max_similarity_index]);
+        // 如果第一个网站没获取到正确答案，则利用第二个网站
+        if (!(result && result[0].charCodeAt(3) > 64 && result[0].charCodeAt(3) < 69)) {
+            try {
+                var r2 = http.get('https://www.souwen123.com/search/select.php?age=' + encodeURI(question.slice(0, 6)));
+                result = r2.body.string().match(/(答案：[A-Z]、)([^<]*?)(<)/); // 匹配答案完整内容，去除选项编号的纯答案放在result[2]中
+            } catch (error) {
+            }
+        }
+
+        className('android.widget.RadioButton').depth(depth_option).waitFor();
+
+        if (result) {
+            var answer = result[2];
+            log("找到在线答案：" + answer.toString())
+            //获取回答选项数组
+            var answerOptionsArray = new Array(0); //数组内容形式：[回答选项控件, 回答选项文字内容, 回答选项控件, ...]
+            log('开始获取答案选项数组');
+            className('android.widget.RadioButton')
+                .depth(depth_option)
+                .find()      //找到所有RadioButton元素
+                .forEach(function (optionUIObject) {    //将每一个RadioButton元素及其代表的答案内容放入数组
+                    answerOptionsArray.push(optionUIObject);
+                    log('obj pushed!');
+                    var optionText;
+                    try {
+                        optionText = optionUIObject.parent().child(1).text();  //尝试获得回答选项的文字内容（针对挑战答题）
+                    } catch (error) {  // 直接获取选项文字不成功的情况（对战模式），则通过OCR获取
+                        optionText = getObjectOcr(optionUIObject.parent().parent());
+                    }
+                    answerOptionsArray.push(optionText);
+
+                    log('option text pushed: ' + optionText);
+                    // toast('option text pushed: ' + ansText);
+                });
+
+            // 遍历选项数组，从中找到包含正确答案的元素
+            var ansIndex = answerOptionsArray.findIndex(val => {
+                try {
+                    return val.includes(answer);
+                } catch (error) {
+                    return false;
+                }
+                // if (typeof val === 'string') {
+                //     return val.includes(result[2]);
+                // } else
+                //     return false;
+            });
+            // 如果没找到答案（可能由于OCR错误），寻找最相似答案
+            if (ansIndex == -1) {
+                var max_similarity = 0;
+                var max_similarity_index = 1;
+                for (var i = 1; i < answerOptionsArray.length; i += 2) {
+                    var similarity = getSimilarity(answerOptionsArray[i], answer);
+                    if (similarity > max_similarity) {
+                        max_similarity = similarity;
+                        max_similarity_index = i;
+                    }
+                }
+                ansIndex = max_similarity_index;
+            }
+
+            try {
+                log('尝试点击答案选项...第 ' + (ansIndex + 1) / 2 + ' 个答案！');
+                answerOptionsArray[ansIndex - 1].click();
+            } catch (error) {
+                // 如果选项不存在，则点击第一个
+                log('选取答案失败，点击第一个答案');
+                className('android.widget.RadioButton').depth(depth_option).findOne().click();
+            }
+        } else {
+            // 如果没找到结果则选择第一个
+            log('没有找到在线答案结果，点击第一个！');
+            className('android.widget.RadioButton').depth(depth_option).findOne().click();
+        }
     }
-  } else {
-    // 没找到答案，点击第一个
-    className('android.widget.RadioButton').depth(32).clickable(true).findOne().click();
-  }
 }
 
-/**
- * @param {image} img 传入图片
- */
-function ocr_api(img) {
-  try {
-    var answer = ocr.recognizeText(img);
-  } catch (error) {
-    toast("请将脚本升级至最新版");
-    exit();
-  }
+  
+  /**
+   * @param {image} img 传入图片
+   */
+  function ocr_api(img) {
+    try {
+      var answer = ocr.recognizeText(img);
+    } catch (error) {
+      toast("请将脚本升级至最新版");
+      exit();
+    }
+  
   // 标点修改
   answer = answer.replace(/,/g, "，");
   answer = answer.replace(/〈〈/g, "《");
@@ -193,9 +227,9 @@ function ocr_api(img) {
   answer = answer.replace(/扶悌/g, "扶梯");
 
   answer = answer.slice(answer.indexOf('.') + 1);
+  answer = answer.slice(0, 10);
   return answer;
 }
-
 /**
  * 用于下面选择题
  * 获取2个字符串的相似度
@@ -203,19 +237,19 @@ function ocr_api(img) {
  * @param {string} str2 字符串2
  * @returns {number} 相似度 
  */
-function getSimilarity(str1, str2) {
-  var sameNum = 0
-  //寻找相同字符
-  for (var i = 0; i < str1.length; i++) {
-    for (var j = 0; j < str2.length; j++) {
-      if (str1[i] === str2[j]) {
-        sameNum++;
-        break;
+ function getSimilarity(str1, str2) {
+    var sameNum = 0
+    //寻找相同字符
+    for (var i = 0; i < str1.length; i++) {
+      for (var j = 0; j < str2.length; j++) {
+        if (str1[i] === str2[j]) {
+          sameNum++;
+          break;
+        }
       }
     }
+    return sameNum / str2.length;
   }
-  return sameNum / str2.length;
-}
 /*
 ********************调用华为API实现ocr********************
 */
@@ -225,7 +259,8 @@ function getSimilarity(str1, str2) {
  */
 function get_huawei_token() {
   var res = http.postJson(
-    'https://iam.cn-north-4.myhuaweicloud.com/v3/auth/tokens',
+    'https://iam.cn-south-1.myhuaweicloud.com/v3/auth/tokens',
+    //'https://iam.cn-north-4.myhuaweicloud.com/v3/auth/tokens',
     {
       "auth": {
         "identity": {
@@ -260,6 +295,7 @@ function get_huawei_token() {
 
 if (whether_improve_accuracy == 'yes' && baidu_or_huawei == 'huawei') var token = get_huawei_token();
 
+
 /**
 * 华为ocr接口，传入图片返回文字
 * @param {image} img 传入图片
@@ -271,7 +307,9 @@ function huawei_ocr_api(img) {
   var answer_right = "";
   var answer = "";
   var res = http.postJson(
-    'https://' + endpoint + '/v2/' + projectId + '/ocr/web-image',
+    // 'https://' + endpoint + '/v2/' + projectId + '/ocr/web-image',
+    'https://ocr.cn-south-1.myhuaweicloud.com/v2/' + projectId + '/ocr/web-image',
+    //https://ocr.cn-south-1.myhuaweicloud.com/v2/{project_id}/ocr/web-image
     {
       "image": images.toBase64(img)
     },
@@ -315,6 +353,7 @@ function huawei_ocr_api(img) {
   answer = answer.slice(answer.indexOf('.') + 1);
   answer = answer.slice(0, 20);
   return answer;
+  log(answer);
 }
 
 /*
@@ -350,6 +389,7 @@ function baidu_ocr_api(img) {
   var answer = "";
   var res = http.post(
     'https://aip.baidubce.com/rest/2.0/ocr/v1/general',
+    //'https://aip.baidubce.com/rest/2.0/ocr/v1/accurate', 
     {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded'
@@ -393,58 +433,58 @@ function baidu_ocr_api(img) {
 
 function do_it() {
 
-  var min_pos_width = device.width;
-  var min_pos_height = device.height;
-
-  while (!text('开始').exists());
-  while (!text('继续挑战').exists()) {
-    className("android.view.View").depth(28).waitFor();
-    var pos = className("android.view.View").depth(28).findOne().bounds();
-    if (className("android.view.View").text("        ").exists())
-      pos = className("android.view.View").text("        ").findOne().bounds();
-    do {
-      var point = findColor(captureScreen(), '#1B1F25', {
-        region: [pos.left, pos.top, pos.width(), pos.height()],
-        threshold: 10,
-      });
-    } while (!point);
-
-    min_pos_width = Math.min(pos.width(), min_pos_width);
-    min_pos_height = Math.min(pos.height(), min_pos_height);
-    var img = images.clip(captureScreen(), pos.left, pos.top, min_pos_width, min_pos_height);
-
-    if (whether_improve_accuracy == 'yes') {
-      if (baidu_or_huawei == 'huawei') var question = huawei_ocr_api(img);
-      else var question = baidu_ocr_api(img);
+    var min_pos_width = device.width;
+    var min_pos_height = device.height;
+  
+    while (!text('开始').exists());
+    while (!text('继续挑战').exists()) {
+      className("android.view.View").depth(28).waitFor();
+      var pos = className("android.view.View").depth(28).findOne().bounds();
+      if (className("android.view.View").text("        ").exists())
+        pos = className("android.view.View").text("        ").findOne().bounds();
+      do {
+        var point = findColor(captureScreen(), '#1B1F25', {
+          region: [pos.left, pos.top, pos.width(), pos.height()],
+          threshold: 10,
+        });
+      } while (!point);
+  
+      min_pos_width = Math.min(pos.width(), min_pos_width);
+      min_pos_height = Math.min(pos.height(), min_pos_height);
+      var img = images.clip(captureScreen(), pos.left, pos.top, min_pos_width, min_pos_height);
+  
+      if (whether_improve_accuracy == 'yes') {
+        if (baidu_or_huawei == 'huawei') var question = huawei_ocr_api(img);
+        else var question = baidu_ocr_api(img);
+      }
+      else var question = ocr_api(img);
+  
+      log(question);
+      if (question) do_contest_answer(32, question);
+      else {
+        className('android.widget.RadioButton').depth(32).waitFor();
+        className('android.widget.RadioButton').depth(32).findOne().click();
+      }
+      // 等待新题目加载
+      while (!textMatches(/第\d题/).exists() && !text('继续挑战').exists() && !text('开始').exists());
     }
-    else var question = ocr_api(img);
-
-    log(question);
-    if (question) do_contest_answer(30, question);
-    else {
-      className('android.widget.RadioButton').depth(32).waitFor();
-      className('android.widget.RadioButton').depth(32).findOne().click();
-    }
-    // 等待新题目加载
-    while (!textMatches(/第\d题/).exists() && !text('继续挑战').exists() && !text('开始').exists());
   }
-}
-
-if (!className('android.view.View').depth(21).text('学习积分').exists()) {
-  app.launchApp('学习强国');
-  sleep(random_time(delay_time * 3));
-  var while_count = 0;
-  while (!id('comm_head_title').exists() && while_count < 5) {
-    while_count++;
-    back();
+  
+  if (!className('android.view.View').depth(21).text('学习积分').exists()) {
+    app.launchApp('学习强国');
+    sleep(random_time(delay_time * 3));
+    var while_count = 0;
+    while (!id('comm_head_title').exists() && while_count < 5) {
+      while_count++;
+      back();
+      sleep(random_time(delay_time));
+    }
+    app.launchApp('学习强国');
     sleep(random_time(delay_time));
+    my_click_clickable('我的');
+    my_click_clickable('学习积分');
   }
-  app.launchApp('学习强国');
-  sleep(random_time(delay_time));
-  my_click_clickable('我的');
-  my_click_clickable('学习积分');
-}
-
+  
 /*
 **********四人赛*********
 */
@@ -491,7 +531,61 @@ if (two_player_battle == 'yes') {
   back();
   my_click_clickable('退出');
 }
+if (text('我的').exists()) {
+  my_click_clickable('我的');
+
+}
+if (text('学习积分').exists()) {
+  my_click_clickable('学习积分');
+
+}
+
+/**
+ * 获取控件对象的本地OCR结果
+ * @param {UIObject} uiObj 
+ * @returns {string} 本地OCR结果
+ */
+ function getObjectOcr(uiObj) {
+    var pos = uiObj.bounds();
+    log('starting capture screen...');
+    var img = images.clip(captureScreen(), pos.left, pos.top, pos.width(), pos.height());
+    log('ocr中....');
+    try {
+        var ans = ocr.ocrImage(img).text;
+    } catch (error) {
+        return undefined;
+    }
+    log('finished ocr! result: ' + ans);
+    return ans;
+}
+if (pushplus_token) {
+
+
+  // 获取今日得分
+  var score = textStartsWith('今日已累积').findOne().text();
+  score = score.match(/\d+/)
+  sleep(random_time(delay_time));
+  back();
+  // 获取账号名
+  var account = id('my_display_name').findOne().text();
+  account = account.slice(0, 1);
+  //toast(account);
+  // 推送消息
+  push_weixin_message(account, score);
+}
+
+
+//震动一秒
+//device.vibrate(1000);
+if (text('学习积分').exists()) {
+  my_click_clickable('学习积分');
+
+} else {
+  home();
+}
+
 
 //震动两秒
+device.cancelKeepingAwake();
 device.vibrate(1000);
 toast('脚本运行完成');
